@@ -9,51 +9,54 @@
  */
 
 #include <iostream>
+#include <cstdlib>
+#include <thread>
 #include <time.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
-#include <cstdlib>
 
 #include "SkipList.hpp"
-#define ADD_SIZE 15
-#define REMOVE_SIZE 10
-#define NUM_OPS_PER_THREAD 20
-#define NUM_OF_THREADS 4
-#define NUM_OF_LOOPS 10
+
+constexpr int ADD_SIZE = 15;
+constexpr int REMOVE_SIZE = 10;
+constexpr int NUM_OPS_PER_THREAD = 20;
+constexpr int NUM_OF_THREADS = 4;
+constexpr int NUM_OF_LOOPS = 10;
 
 // passed in thread constructor
-typedef struct ThreadContext {
+struct ThreadContext {
 	int tid; // thread id
 	int inserts; // # of insert operations
 	int deletes; // # of delete operations
 	int searches; // # search operations
-	SkipList<int> * sList; // shared SkipList resource
-} context_t;
+	std::shared_ptr<SkipList<int>> sList; // shares a single SkipList
+};
 
 // Thread code
-static void * Worker(void * arg)
+static void Worker(ThreadContext& context)
 {
-	context_t * c = static_cast<context_t *>(arg);
-	int numOfOps = NUM_OPS_PER_THREAD;
-	int * addlist = new int[numOfOps];
-	if (addlist == NULL) {
+	printf("Thread %d processing initialized. \n", context.tid);
+	std::unique_ptr<int[]> addList { new int[NUM_OPS_PER_THREAD]() };
+	if (addList == nullptr) {
 		exit(-1);
 	}
 
-	for (int i=0; i<numOfOps; ++i) {
-		addlist[i] = i + (c->tid * NUM_OPS_PER_THREAD);
-		if (c->sList->Insert(i, addlist[i])) {
-			++c->inserts;
+	for (int i=0; i<NUM_OPS_PER_THREAD; ++i) {
+		addList[i] = i + (context.tid * NUM_OPS_PER_THREAD);
+		if (context.sList->Insert(i, addList[i])) {
+			++context.inserts;
 		}
 	}
 
-	for (int i=0; i<numOfOps; ++i) {
-		addlist[i] = i + (c->tid * NUM_OPS_PER_THREAD);
-		if (c->sList->Contains(addlist[i])) {
-			++c->inserts;
+	for (unsigned int i=0; i<NUM_OPS_PER_THREAD; ++i) {
+		addList[i] = i + (context.tid * NUM_OPS_PER_THREAD);
+		if (context.sList->Contains(addList[i])) {
+			++context.searches;
 		}
 	}
+	printf("Thread %d processing complete, exiting. \n", context.tid);
+//	std::cout << "Thread " << context.tid << "completing process" <<  std::cend;
 	//TODO: uncomment below once fine-grain lock complete on Remove()
 //	i = 0;
 //	while (i < numOfOps) {
@@ -70,18 +73,16 @@ static void * Worker(void * arg)
 //		  (c->searches)++;
 //		i++;
 //	}
-
-	delete addlist;
-	return NULL;
 }
 
-// Concurrent tests
-static void SpinThreads() {
+// Spin threads for concurrent tests
+static void ParallelTests() {
 	// the thread contexts can't be shared
 	// or will incur race condition on counters
-	context_t * c = new context_t[NUM_OF_THREADS];
-	pthread_t * workers = new pthread_t[NUM_OF_THREADS];
-	SkipList<int> * sList = new SkipList<int>();
+	ThreadContext c[NUM_OF_THREADS];
+	std::thread workers[NUM_OF_THREADS];
+	std::shared_ptr<SkipList<int>> sList { new SkipList<int> };
+
 	int final_expected_count = 0;
 	int final_expected_sc = 0;
 	int final_expected_ic = 0;
@@ -94,11 +95,11 @@ static void SpinThreads() {
 		c[i].deletes = 0;
 		c[i].searches = 0;
 		c[i].sList = sList;
-		assert(pthread_create(&workers[i], NULL, Worker, &c[i])==0);
+		workers[i] = std::thread(Worker, std::ref(c[i]));
 	}
 
 	for (int i=0; i<NUM_OF_THREADS; i++) {
-		pthread_join(workers[i], NULL);
+		workers[i].join();
 	}
 
 	for (int i=0; i<NUM_OF_THREADS; i++) {
@@ -108,9 +109,6 @@ static void SpinThreads() {
 	}
 	assert(final_expected_ic==NUM_OF_THREADS*NUM_OPS_PER_THREAD);
 	assert(final_expected_sc==NUM_OF_THREADS*NUM_OPS_PER_THREAD);
-	delete c;
-	delete workers;
-	delete sList;
 }
 
 // Sequential tests
@@ -122,14 +120,12 @@ static void SequentialTests () {
 		sList.Print();
 	}
 	assert(sList.size==ADD_SIZE);
-	//sList->Print();
-
-	int * sRemovals = new int[REMOVE_SIZE];
-	for (int i=0; i<REMOVE_SIZE; ++i) {
+	std::unique_ptr<int[]> sRemovals { new int[REMOVE_SIZE]() };
+	for (unsigned int i=0; i<REMOVE_SIZE; ++i) {
 		sRemovals[i] = rand()%ADD_SIZE;
 	}
 	unsigned int trueSize = sList.size;
-	for (int i=0; i<REMOVE_SIZE; ++i) {
+	for (unsigned int i=0; i<REMOVE_SIZE; ++i) {
 		std::cout << "------Removing " << sRemovals[i] << "------" << std::endl;
 		if (sList.Contains(sRemovals[i])) {
 			assert(sList.Remove(sRemovals[i]));
@@ -142,21 +138,20 @@ static void SequentialTests () {
 		assert(!sList.Contains(sRemovals[i]));
 	}
 	assert(trueSize==sList.size);
-	delete [] sRemovals;
 }
 
 int main()
 {
-	srand(static_cast<unsigned int>(time(NULL)));
+	srand(static_cast<unsigned int>(time(nullptr)));
 	std::cout << "Beginning Sequential SkipList tests..." << std::endl;
 	for (int i=0; i<NUM_OF_LOOPS; ++i) {
 		SequentialTests();
 	}
-	std::cout << "Successful completion of Sequential SkipList tests" << std::endl;
+	std::cout << "Successful completion of Sequential SkipList tests." << std::endl;
 	std::cout << "Beginning Concurrent SkipList tests..." << std::endl;
 	for (int i=0; i<NUM_OF_LOOPS; ++i) {
-		SpinThreads();
+		ParallelTests();
 	}
-	std::cout << "Successful completion of Concurrent SkipList tests..." << std::endl;
+	std::cout << "Successful completion of Concurrent SkipList tests." << std::endl;
 	return 0;
 }
